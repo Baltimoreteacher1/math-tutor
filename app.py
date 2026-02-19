@@ -1,5 +1,6 @@
 import streamlit as st
 import anthropic
+import openai
 from datetime import datetime
 
 # Page config
@@ -57,17 +58,38 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "teacher_mode" not in st.session_state:
     st.session_state.teacher_mode = True
-if "api_key_set" not in st.session_state:
-    st.session_state.api_key_set = False
+if "api_keys_set" not in st.session_state:
+    st.session_state.api_keys_set = False
+if "selected_ai" not in st.session_state:
+    st.session_state.selected_ai = "Claude"
 
 # Sidebar for teacher controls
 with st.sidebar:
     st.title("📚 Math Tutor Control Panel")
     
-    # API Key input
-    api_key = st.text_input("Enter your Anthropic API Key", type="password", key="api_key_input")
-    if api_key:
-        st.session_state.api_key_set = True
+    st.subheader("API Configuration")
+    
+    # AI Selection
+    st.session_state.selected_ai = st.radio(
+        "Choose AI Tutor:",
+        ["Claude (Anthropic)", "ChatGPT (OpenAI)"],
+        index=0 if st.session_state.selected_ai == "Claude" else 1,
+        key="ai_selection"
+    )
+    
+    # API Key inputs based on selection
+    if "Claude" in st.session_state.selected_ai:
+        anthropic_key = st.text_input("Enter your Anthropic API Key", type="password", key="anthropic_key_input")
+        if anthropic_key:
+            st.session_state.anthropic_api_key = anthropic_key
+            st.session_state.api_keys_set = True
+        st.markdown("[Get Anthropic API Key →](https://console.anthropic.com)")
+    else:
+        openai_key = st.text_input("Enter your OpenAI API Key", type="password", key="openai_key_input")
+        if openai_key:
+            st.session_state.openai_api_key = openai_key
+            st.session_state.api_keys_set = True
+        st.markdown("[Get OpenAI API Key →](https://platform.openai.com/api-keys)")
     
     st.markdown("---")
     
@@ -124,13 +146,13 @@ with st.sidebar:
             st.info("No problems added yet")
     
     st.markdown("---")
-    st.markdown("**Need help?** Make sure you have an Anthropic API key from [console.anthropic.com](https://console.anthropic.com)")
+    st.markdown("**Tips:**\n- Use Claude for best tutoring\n- Use ChatGPT as alternative\n- Both work great for ESOL students!")
 
 # Main content area
 if not st.session_state.teacher_mode:
     # Student mode
-    if not st.session_state.api_key_set:
-        st.warning("⚠️ Teacher hasn't set up the API key yet. Please ask your teacher to configure it.")
+    if not st.session_state.api_keys_set:
+        st.warning("⚠️ Teacher hasn't set up an API key yet. Please ask your teacher to configure it.")
     elif st.session_state.current_problem_index is None or len(st.session_state.problems) == 0:
         st.info("📚 No problem selected. Your teacher will add problems here.")
     else:
@@ -168,29 +190,20 @@ if not st.session_state.teacher_mode:
         
         # Process user input
         if send_button and user_input.strip():
-            if not api_key:
-                st.error("API key not set. Please provide it in the sidebar.")
-            else:
-                # Add user message
-                st.session_state.messages.append({"role": "student", "content": user_input})
+            # Add user message
+            st.session_state.messages.append({"role": "student", "content": user_input})
+            
+            try:
+                # Build conversation history for API
+                api_messages = []
+                for msg in st.session_state.messages:
+                    api_messages.append({
+                        "role": "user" if msg["role"] == "student" else "assistant",
+                        "content": msg["content"]
+                    })
                 
-                # Get tutor response
-                try:
-                    client = anthropic.Anthropic(api_key=api_key)
-                    
-                    # Build conversation history for API
-                    api_messages = []
-                    for msg in st.session_state.messages:
-                        api_messages.append({
-                            "role": "user" if msg["role"] == "student" else "assistant",
-                            "content": msg["content"]
-                        })
-                    
-                    # Create message with adaptive tutoring prompt
-                    response = client.messages.create(
-                        model="claude-opus-4-20250805",
-                        max_tokens=1000,
-                        system=f"""You are an adaptive math tutor helping students (both ESOL and non-ESOL) solve word problems. Your role is to:
+                # System prompt for tutoring
+                tutoring_system_prompt = f"""You are an adaptive math tutor helping students (both ESOL and non-ESOL) solve word problems. Your role is to:
 
 1. ASSESS their response by identifying:
    - Their language proficiency level (beginner/intermediate/advanced English)
@@ -220,16 +233,44 @@ if not st.session_state.teacher_mode:
 
 Current word problem: "{current_problem}"
 
-Help the student work through this problem step by step based on where they are in their thinking.""",
-                        messages=api_messages
-                    )
-                    
-                    tutor_message = response.content[0].text
-                    st.session_state.messages.append({"role": "tutor", "content": tutor_message})
-                    st.rerun()
+Help the student work through this problem step by step based on where they are in their thinking."""
                 
-                except anthropic.APIError as e:
-                    st.error(f"API Error: {str(e)}")
+                # Call appropriate API
+                if "Claude" in st.session_state.selected_ai:
+                    if not hasattr(st.session_state, 'anthropic_api_key'):
+                        st.error("API key not set. Please provide it in the sidebar.")
+                    else:
+                        client = anthropic.Anthropic(api_key=st.session_state.anthropic_api_key)
+                        response = client.messages.create(
+                            model="claude-opus-4-20250805",
+                            max_tokens=1000,
+                            system=tutoring_system_prompt,
+                            messages=api_messages
+                        )
+                        tutor_message = response.content[0].text
+                        st.session_state.messages.append({"role": "tutor", "content": tutor_message})
+                        st.rerun()
+                else:  # ChatGPT
+                    if not hasattr(st.session_state, 'openai_api_key'):
+                        st.error("API key not set. Please provide it in the sidebar.")
+                    else:
+                        openai.api_key = st.session_state.openai_api_key
+                        response = openai.ChatCompletion.create(
+                            model="gpt-4",
+                            max_tokens=1000,
+                            system=tutoring_system_prompt,
+                            messages=api_messages
+                        )
+                        tutor_message = response.choices[0].message.content
+                        st.session_state.messages.append({"role": "tutor", "content": tutor_message})
+                        st.rerun()
+            
+            except anthropic.APIError as e:
+                st.error(f"Anthropic API Error: {str(e)}")
+            except openai.error.OpenAIError as e:
+                st.error(f"OpenAI API Error: {str(e)}")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
 else:
     # Teacher mode view
     st.title("👨‍🏫 Teacher Control Panel")
